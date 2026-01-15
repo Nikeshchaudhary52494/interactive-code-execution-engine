@@ -54,6 +54,16 @@ func New(
 	}
 }
 
+func (s *Session) Start() {
+	log.Printf("Session %s created, waiting 1 min for connections", s.ID)
+	s.timer = time.AfterFunc(1*time.Minute, func() {
+		if s.ActiveWSCount() == 0 {
+			log.Printf("Engine: No one joined session %s, terminating", s.ID)
+			s.Stop()
+		}
+	})
+}
+
 // --------------------
 // Input handling
 // --------------------

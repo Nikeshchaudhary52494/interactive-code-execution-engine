@@ -9,19 +9,24 @@ import (
 	"execution-engine/internal/session"
 )
 
-type engine struct {
+type Engine interface {
+	StartSession(ctx context.Context, req modules.ExecuteRequest) (*session.Session, error)
+	GetSession(id string) (*session.Session, bool)
+}
+
+type engineImpl struct {
 	executor *executor.DockerExecutor
 	sessions *session.Manager
 }
 
-func New(exec *executor.DockerExecutor) *engine {
-	return &engine{
+func New(exec *executor.DockerExecutor) Engine {
+	return &engineImpl{
 		executor: exec,
 		sessions: session.NewManager(),
 	}
 }
 
-func (e *engine) StartSession(
+func (e *engineImpl) StartSession(
 	ctx context.Context,
 	req modules.ExecuteRequest,
 ) (*session.Session, error) {
@@ -32,7 +37,7 @@ func (e *engine) StartSession(
 	}
 
 	e.sessions.Add(sess)
-	log.Printf("Engine: Session %s added to the manager", sess.ID)
+	sess.Start() // Start session lifecycle (e.g., inactivity timer)
 
 	// 🔥 AUTO-REMOVE when done
 	go func() {
@@ -44,6 +49,6 @@ func (e *engine) StartSession(
 	return sess, nil
 }
 
-func (e *engine) GetSession(id string) (*session.Session, bool) {
+func (e *engineImpl) GetSession(id string) (*session.Session, bool) {
 	return e.sessions.Get(id)
 }
