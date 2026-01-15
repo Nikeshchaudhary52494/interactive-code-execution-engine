@@ -13,8 +13,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
-	"execution-engine/internal/engine"
 	"execution-engine/internal/language"
+	"execution-engine/internal/modules"
 )
 
 const (
@@ -41,7 +41,7 @@ func (d *DockerExecutor) Run(
 	lang string,
 	code string,
 	inputs []string,
-) (*engine.ExecuteResult, error) {
+) (*modules.ExecuteResult, error) {
 
 	spec, err := language.Resolve(lang)
 	if err != nil {
@@ -67,7 +67,7 @@ func (d *DockerExecutor) runContainer(
 	tempDir string,
 	spec language.Spec,
 	inputs []string,
-) (*engine.ExecuteResult, error) {
+) (*modules.ExecuteResult, error) {
 
 	startTime := time.Now()
 
@@ -75,13 +75,13 @@ func (d *DockerExecutor) runContainer(
 	createResp, err := d.cli.ContainerCreate(
 		ctx,
 		&container.Config{
-			Image:      spec.Image,
-			Cmd:        spec.RunCommand,
-			WorkingDir: workspaceDir,
-			Tty:        false,
-			OpenStdin:   true,
-			AttachStdin: true,
-			StdinOnce:   true,
+			Image:           spec.Image,
+			Cmd:             spec.RunCommand,
+			WorkingDir:      workspaceDir,
+			Tty:             false,
+			OpenStdin:       true,
+			AttachStdin:     true,
+			StdinOnce:       true,
 			AttachStdout:    true,
 			AttachStderr:    true,
 			NetworkDisabled: true,
@@ -195,7 +195,7 @@ func (d *DockerExecutor) runContainer(
 
 	duration := time.Since(startTime)
 
-	return &engine.ExecuteResult{
+	return &modules.ExecuteResult{
 		ExitCode:   exitCode,
 		Stdout:     stdoutBuf.String(),
 		Stderr:     stderrBuf.String(),

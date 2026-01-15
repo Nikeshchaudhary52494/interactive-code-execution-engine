@@ -2,28 +2,38 @@ package engine
 
 import (
 	"context"
-	"fmt"
+
+	"execution-engine/internal/executor"
+	"execution-engine/internal/modules"
+	"execution-engine/internal/session"
 )
 
-type Engine interface {
-	Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error)
-}
-
 type engine struct {
-	executor Executor
+	executor *executor.DockerExecutor
+	sessions *session.Manager
 }
 
-func New(executor Executor) Engine {
-	return &engine{executor: executor}
-}
-
-func (e *engine) Execute(
-	ctx context.Context,
-	req ExecuteRequest,
-) (*ExecuteResult, error) {
-	result, err := e.executor.Run(ctx, req.Language, req.Code, req.Inputs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to run executor: %w", err)
+func New(exec *executor.DockerExecutor) *engine {
+	return &engine{
+		executor: exec,
+		sessions: session.NewManager(),
 	}
-	return result, nil
+}
+
+func (e *engine) StartSession(
+	ctx context.Context,
+	req modules.ExecuteRequest,
+) (*session.Session, error) {
+
+	sess, err := e.executor.StartSession(ctx, req.Language, req.Code)
+	if err != nil {
+		return nil, err
+	}
+
+	e.sessions.Add(sess)
+	return sess, nil
+}
+
+func (e *engine) GetSession(id string) (*session.Session, bool) {
+	return e.sessions.Get(id)
 }
