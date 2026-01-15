@@ -40,6 +40,7 @@ func (d *DockerExecutor) Run(
 	ctx context.Context,
 	lang string,
 	code string,
+	inputs []string,
 ) (*engine.ExecuteResult, error) {
 
 	spec, err := language.Resolve(lang)
@@ -58,13 +59,14 @@ func (d *DockerExecutor) Run(
 		return nil, fmt.Errorf("write code file: %w", err)
 	}
 
-	return d.runContainer(ctx, tempDir, spec)
+	return d.runContainer(ctx, tempDir, spec, inputs)
 }
 
 func (d *DockerExecutor) runContainer(
 	ctx context.Context,
 	tempDir string,
 	spec language.Spec,
+	inputs []string,
 ) (*engine.ExecuteResult, error) {
 
 	startTime := time.Now()
@@ -73,11 +75,13 @@ func (d *DockerExecutor) runContainer(
 	createResp, err := d.cli.ContainerCreate(
 		ctx,
 		&container.Config{
-			Image:           spec.Image,
-			Cmd:             spec.RunCommand,
-			WorkingDir:      workspaceDir,
-			Tty:             false,
-			OpenStdin:       false, // non-interactive for now
+			Image:      spec.Image,
+			Cmd:        spec.RunCommand,
+			WorkingDir: workspaceDir,
+			Tty:        false,
+			OpenStdin:   true,
+			AttachStdin: true,
+			StdinOnce:   true,
 			AttachStdout:    true,
 			AttachStderr:    true,
 			NetworkDisabled: true,
@@ -120,6 +124,7 @@ func (d *DockerExecutor) runContainer(
 		containerID,
 		container.AttachOptions{
 			Stream: true,
+			Stdin:  true,
 			Stdout: true,
 			Stderr: true,
 		},
@@ -142,6 +147,16 @@ func (d *DockerExecutor) runContainer(
 		return nil, fmt.Errorf("container start: %w", err)
 	}
 
+	// ---------- WRITE INPUT ----------
+	if len(inputs) > 0 {
+		go func() {
+			for _, in := range inputs {
+				_, _ = attachResp.Conn.Write([]byte(in))
+			}
+			_ = attachResp.CloseWrite()
+		}()
+	}
+
 	// ---------- WAIT / TIMEOUT ----------
 	waitCh, errCh := d.cli.ContainerWait(
 		ctx,
@@ -149,10 +164,8 @@ func (d *DockerExecutor) runContainer(
 		container.WaitConditionNotRunning,
 	)
 
-	var (
-		exitCode int
-		timedOut bool
-	)
+	var exitCode int
+	timedOut := false
 
 	select {
 	case err := <-errCh:

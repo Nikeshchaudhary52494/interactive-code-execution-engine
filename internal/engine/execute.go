@@ -7,5 +7,6 @@ type Executor interface {
 		ctx context.Context,
 		lang string,
 		code string,
+		inputs []string,
 	) (*ExecuteResult, error)
 }

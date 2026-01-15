@@ -6,7 +6,7 @@ import (
 )
 
 type Engine interface {
-    Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error)
+	Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error)
 }
 
 type engine struct {
@@ -21,7 +21,7 @@ func (e *engine) Execute(
 	ctx context.Context,
 	req ExecuteRequest,
 ) (*ExecuteResult, error) {
-	result, err := e.executor.Run(ctx, req.Language, req.Code)
+	result, err := e.executor.Run(ctx, req.Language, req.Code, req.Inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to run executor: %w", err)
 	}
