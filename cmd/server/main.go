@@ -1,14 +1,23 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"execution-engine/internal/engine"
 	"execution-engine/internal/executor"
 	"execution-engine/internal/modules"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // handle auth later
+	},
+}
 
 func main() {
 	// ---- bootstrap docker executor ----
@@ -22,9 +31,9 @@ func main() {
 
 	r := gin.Default()
 
-	// -------------------------------
-	// Create Session
-	// -------------------------------
+	// ------------------------------------------------
+	// Create Session (HTTP)
+	// ------------------------------------------------
 	r.POST("/session", func(c *gin.Context) {
 		var req modules.ExecuteRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -47,11 +56,12 @@ func main() {
 		})
 	})
 
-	// -------------------------------
-	// Send Input
-	// -------------------------------
-	r.POST("/session/:id/input", func(c *gin.Context) {
+	// ------------------------------------------------
+	// WebSocket: Interactive Execution
+	// ------------------------------------------------
+	r.GET("/ws/session/:id", func(c *gin.Context) {
 		id := c.Param("id")
+		fmt.Println("ws connection for session:", id)
 
 		sess, ok := eng.GetSession(id)
 		if !ok {
@@ -61,82 +71,85 @@ func main() {
 			return
 		}
 
-		var body struct {
-			Data string `json:"data"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "invalid json",
-			})
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
 			return
 		}
+		defer conn.Close()
 
-		if err := sess.WriteInput(body.Data); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": err.Error(),
-			})
-			return
+		// -------------------------------
+		// Client → stdin
+		// -------------------------------
+		go func() {
+			for {
+				var msg struct {
+					Type string `json:"type"`
+					Data string `json:"data"`
+				}
+
+				if err := conn.ReadJSON(&msg); err != nil {
+					// client disconnected
+					sess.CloseInput()
+					return
+				}
+
+				switch msg.Type {
+				case "input":
+					_ = sess.WriteInput(msg.Data)
+				case "close":
+					sess.CloseInput()
+				}
+			}
+		}()
+
+		// -------------------------------
+		// stdout / stderr → client
+		// -------------------------------
+		lastStdout := 0
+		lastStderr := 0
+
+		for {
+			select {
+			case <-sess.Done():
+				// flush remaining output
+				_ = sendDiff(conn, "stdout", sess.Stdout.String(), &lastStdout)
+				_ = sendDiff(conn, "stderr", sess.Stderr.String(), &lastStderr)
+
+				_ = conn.WriteJSON(gin.H{
+					"type":  "state",
+					"state": sess.State,
+				})
+				return
+
+			default:
+				if err := sendDiff(conn, "stdout", sess.Stdout.String(), &lastStdout); err != nil {
+					return
+				}
+				if err := sendDiff(conn, "stderr", sess.Stderr.String(), &lastStderr); err != nil {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
 		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"message": "input written",
-			"state":   sess.State,
-		})
 	})
 
-	// -------------------------------
-	// Get Output (temporary polling)
-	// -------------------------------
-	r.GET("/session/:id/output", func(c *gin.Context) {
-		id := c.Param("id")
-
-		sess, ok := eng.GetSession(id)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "session not found",
-			})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"stdout": sess.Stdout.String(),
-			"stderr": sess.Stderr.String(),
-			"state":  sess.State,
-		})
-	})
-
-	// -------------------------------
-	// Close Input
-	// -------------------------------
-	r.POST("/session/:id/close", func(c *gin.Context) {
-		id := c.Param("id")
-
-		sess, ok := eng.GetSession(id)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "session not found",
-			})
-			return
-		}
-
-		// Close stdin (send EOF)
-		sess.CloseInput()
-
-		// OPTIONAL: wait until process actually exits
-		// sess.Wait()
-
-		c.JSON(http.StatusOK, gin.H{
-			"message": "session closed",
-			"state":   sess.State,
-			"stdout":  sess.Stdout.String(),
-			"stderr":  sess.Stderr.String(),
-		})
-	})
-
-	// -------------------------------
+	// ------------------------------------------------
 	// Start server
-	// -------------------------------
+	// ------------------------------------------------
 	if err := r.Run(":8080"); err != nil {
 		panic(err)
 	}
+}
+
+func sendDiff(conn *websocket.Conn, t string, data string, last *int) error {
+	if len(data) > *last {
+		chunk := data[*last:]
+		*last = len(data)
+
+		return conn.WriteJSON(gin.H{
+			"type": t,
+			"data": chunk,
+		})
+	}
+	return nil
 }
