@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
     <meta charset="UTF-8" />
@@ -10,39 +10,77 @@
         color: #0f0;
         padding: 20px;
       }
-      #terminal {
+
+      textarea,
+      input {
         width: 100%;
-        height: 400px;
-        background: black;
-        color: #0f0;
-        padding: 10px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        border: 1px solid #444;
-      }
-      #input {
-        width: 100%;
-        padding: 10px;
         font-family: monospace;
         font-size: 14px;
         background: #222;
         color: #0f0;
         border: 1px solid #444;
         outline: none;
+        padding: 10px;
+        box-sizing: border-box;
       }
+
+      textarea {
+        height: 180px;
+        resize: vertical;
+        margin-bottom: 10px;
+      }
+
+      #terminal {
+        width: 100%;
+        height: 300px;
+        background: black;
+        color: #0f0;
+        padding: 10px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        border: 1px solid #444;
+        margin-top: 10px;
+      }
+
       button {
         margin-top: 10px;
         padding: 8px 16px;
         font-family: monospace;
+        background: #333;
+        color: #0f0;
+        border: 1px solid #555;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
     </style>
   </head>
+
   <body>
     <h2>🧪 Interactive Execution Engine</h2>
 
-    <button onclick="start()">▶ Start Session</button>
+    <!-- CODE INPUT -->
+    <textarea id="code">
+import time
 
+print("Program started")
+name = input("Enter your name: ")
+print("Hello", name)
+
+for i in range(5):
+    time.sleep(1)
+    print(i)
+    </textarea>
+
+    <button id="runBtn" onclick="start()">▶ Run</button>
+
+    <!-- TERMINAL -->
     <div id="terminal"></div>
+
+    <!-- STDIN -->
     <input id="input" placeholder="Type input and press Enter" disabled />
 
     <script>
@@ -51,6 +89,8 @@
 
       const terminal = document.getElementById("terminal");
       const input = document.getElementById("input");
+      const codeBox = document.getElementById("code");
+      const runBtn = document.getElementById("runBtn");
 
       function write(data) {
         terminal.textContent += data;
@@ -65,15 +105,9 @@
       async function start() {
         terminal.textContent = "";
         input.disabled = true;
+        runBtn.disabled = true;
 
-        // ---- CODE TO EXECUTE ----
-        const code = `
-import time
-
-for i in range(5):
-    time.sleep(1)
-    print(i)
-`;
+        const code = codeBox.value;
 
         // ---- CREATE SESSION ----
         const res = await fetch("http://localhost:8080/session", {
@@ -90,7 +124,7 @@ for i in range(5):
 
         write("Session created: " + sessionId + "\n");
 
-        // ---- CONNECT WEBSOCKET ----
+        // ---- CONNECT WS ----
         ws = new WebSocket(`ws://localhost:8080/ws/session/${sessionId}`);
 
         ws.onopen = () => {
@@ -102,25 +136,26 @@ for i in range(5):
         ws.onmessage = (e) => {
           const msg = JSON.parse(e.data);
 
-          if (msg.type === "stdout") {
-            write(msg.data);
-          }
-
-          if (msg.type === "stderr") {
-            writeError(msg.data);
-          }
+          if (msg.type === "stdout") write(msg.data);
+          if (msg.type === "stderr") writeError(msg.data);
 
           if (msg.type === "state") {
             write("\n[SESSION " + msg.state + "]\n");
-            input.disabled = true;
-            ws.close();
+            cleanup();
           }
         };
 
         ws.onclose = () => {
           write("[WS closed]\n");
-          input.disabled = true;
+          cleanup();
         };
+      }
+
+      function cleanup() {
+        input.disabled = true;
+        runBtn.disabled = false;
+        if (ws) ws.close();
+        ws = null;
       }
 
       // ---- SEND INPUT ----
@@ -134,7 +169,7 @@ for i in range(5):
               JSON.stringify({
                 type: "input",
                 data: value + "\n",
-              })
+              }),
             );
           }
         }
@@ -142,9 +177,7 @@ for i in range(5):
 
       // ---- BROWSER CLOSE ----
       window.addEventListener("beforeunload", () => {
-        if (ws) {
-          ws.close();
-        }
+        if (ws) ws.close();
       });
     </script>
   </body>

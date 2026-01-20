@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/pkg/stdcopy"
 
 	"execution-engine/internal/session"
 )
@@ -16,8 +15,19 @@ func (d *DockerExecutor) watchSession(
 ) {
 	defer os.RemoveAll(tempDir)
 
-	// stream output
-	go stdcopy.StdCopy(&s.Stdout, &s.Stderr, s.Output)
+	// ---------------- stream stdout ----------------
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := s.Output.Read(buf)
+			if n > 0 {
+				s.AppendOutput(buf[:n]) // 🔥 safe wrapper
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	waitCh, _ := d.cli.ContainerWait(
 		context.Background(),

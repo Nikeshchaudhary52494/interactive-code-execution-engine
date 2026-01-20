@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -10,6 +11,10 @@ import (
 
 	"execution-engine/internal/language"
 	"execution-engine/internal/session"
+)
+
+const (
+	workspaceDir = "/workspace"
 )
 
 func (d *DockerExecutor) StartSession(
@@ -33,36 +38,71 @@ func (d *DockerExecutor) StartSession(
 		return nil, err
 	}
 
-	resp, err := d.cli.ContainerCreate(
+	createResp, err := d.cli.ContainerCreate(
 		ctx,
 		&container.Config{
-			Image:        spec.Image,
-			Cmd:          spec.RunCommand,
-			WorkingDir:   "/workspace",
-			OpenStdin:    true,
-			AttachStdin:  true,
-			StdinOnce:    false,
-			AttachStdout: true,
-			AttachStderr: true,
+			Image:           spec.Image,
+			Cmd:             spec.RunCommand,
+			WorkingDir:      workspaceDir,
+			OpenStdin:       true,
+			AttachStdin:     true,
+			StdinOnce:       false,
+			AttachStdout:    true,
+			AttachStderr:    true,
+			NetworkDisabled: true,
 		},
 		&container.HostConfig{
+			Resources: container.Resources{
+				Memory:    200 * 1024 * 1024,
+				NanoCPUs:  500_000_000,
+				PidsLimit: ptr(int64(32)),
+			},
+			ReadonlyRootfs: true,
+			CapDrop:        []string{"ALL"},
+			SecurityOpt:    []string{"no-new-privileges"},
+			Tmpfs: map[string]string{
+				// "/workspace": "rw,size=64m,noexec,nosuid",
+				"/tmp": "rw,size=32m,noexec,nosuid",
+			},
 			Mounts: []mount.Mount{
 				{
-					Type:   mount.TypeBind,
-					Source: tempDir,
-					Target: "/workspace",
+					Type:     mount.TypeBind,
+					Source:   tempDir,
+					Target:   workspaceDir,
+					ReadOnly: false,
 				},
 			},
 		},
 		nil, nil, "",
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("container create: %w", err)
 	}
+
+	// containerID := createResp.ID
+	// defer func() {
+	// 	_ = d.cli.ContainerRemove(
+	// 		context.Background(),
+	// 		containerID,
+	// 		container.RemoveOptions{Force: true},
+	// 	)
+	// }()
+
+	// if err := copyCodeToContainer(
+	// 	ctx,
+	// 	d.cli,
+	// 	createResp.ID,
+	// 	spec.FileName, // e.g. main.py
+	// 	code,
+	// ); err != nil {
+	// 	// cleanup on failure
+	// 	_ = d.cli.ContainerRemove(context.Background(), createResp.ID, container.RemoveOptions{Force: true})
+	// 	return nil, err
+	// }
 
 	attach, err := d.cli.ContainerAttach(
 		ctx,
-		resp.ID,
+		createResp.ID,
 		container.AttachOptions{
 			Stream: true,
 			Stdin:  true,
@@ -71,10 +111,10 @@ func (d *DockerExecutor) StartSession(
 		},
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("container attach: %w", err)
 	}
 
-	if err := d.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := d.cli.ContainerStart(ctx, createResp.ID, container.StartOptions{}); err != nil {
 		return nil, err
 	}
 
@@ -82,7 +122,7 @@ func (d *DockerExecutor) StartSession(
 
 	sess := session.New(
 		session.NewID(),
-		resp.ID,
+		createResp.ID,
 		attach.Conn,
 		attach.Reader,
 		sessCtx,

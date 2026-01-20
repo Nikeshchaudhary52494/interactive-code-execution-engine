@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+const (
+	MaxOutputBytes = 1 << 20 // 1 MB
+)
+
 type Session struct {
 	ID        string
 	State     State
@@ -31,6 +35,10 @@ type Session struct {
 	mu       sync.Mutex
 	activeWS int
 	timer    *time.Timer
+
+	lastActivity time.Time
+	idleTimeout  time.Duration
+	idleTimer    *time.Timer
 }
 
 func New(
@@ -41,32 +49,45 @@ func New(
 	ctx context.Context,
 	cancel context.CancelFunc,
 ) *Session {
-	return &Session{
-		ID:          id,
-		ContainerID: containerID,
-		State:       StateRunning,
-		StartedAt:   time.Now(),
-		Stdin:       stdin,
-		Output:      output,
-		ctx:         ctx,
-		cancel:      cancel,
-		done:        make(chan struct{}),
+	s := &Session{
+		ID:           id,
+		ContainerID:  containerID,
+		State:        StateRunning,
+		StartedAt:    time.Now(),
+		Stdin:        stdin,
+		Output:       output,
+		ctx:          ctx,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		idleTimeout:  30 * time.Second,
+		lastActivity: time.Now(),
+	}
+	s.startIdleWatcher()
+	return s
+}
+
+//
+// ---------------- Output handling (SAFE) ----------------
+//
+
+func (s *Session) AppendOutput(data []byte) {
+	s.mu.Lock()
+	s.Stdout.Write(data)
+
+	overflow := s.Stdout.Len() > MaxOutputBytes
+	s.lastActivity = time.Now()
+	s.idleTimer.Reset(s.idleTimeout)
+	s.mu.Unlock()
+
+	if overflow {
+		log.Printf("Session %s: output limit exceeded", s.ID)
+		s.Stop()
 	}
 }
 
-func (s *Session) Start() {
-	log.Printf("Session %s created, waiting 1 min for connections", s.ID)
-	s.timer = time.AfterFunc(1*time.Minute, func() {
-		if s.ActiveWSCount() == 0 {
-			log.Printf("Engine: No one joined session %s, terminating", s.ID)
-			s.Stop()
-		}
-	})
-}
-
-// --------------------
-// Input handling
-// --------------------
+//
+// ---------------- Input handling ----------------
+//
 
 func (s *Session) WriteInput(data string) error {
 	s.mu.Lock()
@@ -76,25 +97,16 @@ func (s *Session) WriteInput(data string) error {
 		return fmt.Errorf("session not accepting input (state=%s)", s.State)
 	}
 
+	s.lastActivity = time.Now()
+	s.idleTimer.Reset(s.idleTimeout)
+
 	_, err := s.Stdin.Write([]byte(data))
 	return err
 }
 
-func (s *Session) CloseInput() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Mark intent: no more input
-	if s.State == StateRunning {
-		s.State = StateWaitingInput
-	}
-
-	_ = s.Stdin.Close()
-}
-
-// --------------------
-// Lifecycle handling
-// --------------------
+//
+// ---------------- Lifecycle handling ----------------
+//
 
 func (s *Session) MarkFinished() {
 	s.mu.Lock()
@@ -132,28 +144,31 @@ func (s *Session) Close() {
 	s.signalDone()
 }
 
-// --------------------
-// Synchronization
-// --------------------
+func (s *Session) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-func (s *Session) signalDone() {
-	s.doneOnce.Do(func() {
-		close(s.done)
-	})
+	if s.State == StateFinished || s.State == StateTerminated {
+		return
+	}
+
+	log.Printf("Session %s: Stopping session.", s.ID)
+	s.State = StateTerminated
+	s.cancel()
+	s.signalDone()
 }
 
-func (s *Session) Done() <-chan struct{} {
-	return s.done
+func (s *Session) Context() context.Context {
+	return s.ctx
 }
 
-// Wait blocks until the session finishes or terminates
-func (s *Session) Wait() {
-	<-s.done
+func (s *Session) Cancel() {
+	s.cancel()
 }
 
-// --------------------
-// WebSocket handling
-// --------------------
+//
+// ---------------- WS handling ----------------
+//
 
 func (s *Session) AttachWS() {
 	s.mu.Lock()
@@ -179,30 +194,33 @@ func (s *Session) DetachWS() bool {
 	return s.activeWS == 0
 }
 
-func (s *Session) Stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.State == StateFinished || s.State == StateTerminated {
-		return
-	}
-
-	log.Printf("Session %s: Stopping session.", s.ID)
-	s.State = StateTerminated
-	s.cancel() // 🔥 THIS IS THE KEY
-	s.signalDone()
-}
-
 func (s *Session) ActiveWSCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeWS
 }
 
-func (s *Session) Context() context.Context {
-	return s.ctx
+//
+// ---------------- Idle timeout ----------------
+//
+
+func (s *Session) startIdleWatcher() {
+	s.idleTimer = time.AfterFunc(s.idleTimeout, func() {
+		log.Printf("Session %s idle timeout", s.ID)
+		s.Stop()
+	})
 }
 
-func (s *Session) Cancel() {
-	s.cancel()
+//
+// ---------------- Synchronization ----------------
+//
+
+func (s *Session) signalDone() {
+	s.doneOnce.Do(func() {
+		close(s.done)
+	})
+}
+
+func (s *Session) Done() <-chan struct{} {
+	return s.done
 }
