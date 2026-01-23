@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  execution-engine:
+    build: .
+    image: execution-engine:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the Docker socket to allow the container to spawn sibling containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount the shared workspace volume
+      - execution_workspace:/app/workspace
+    environment:
+      - USE_DOCKER_VOLUME=true
+      - EXECUTION_BASE_DIR=/app/workspace
+      - DOCKER_VOLUME_NAME=execution_workspace
+    restart: unless-stopped
+    container_name: execution-engine
+
+volumes:
+  execution_workspace:
+    name: execution_workspace

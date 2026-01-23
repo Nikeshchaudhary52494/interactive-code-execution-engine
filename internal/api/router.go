@@ -20,6 +20,9 @@ func New(eng engine.Engine) *gin.Engine {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// Serve the frontend
+	r.StaticFile("/", "./index.html")
+
 	RegisterSessionHTTP(r, eng)
 	RegisterSessionWS(r, eng)
 

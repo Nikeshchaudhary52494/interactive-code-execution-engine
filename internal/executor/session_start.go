@@ -28,9 +28,51 @@ func (d *DockerExecutor) StartSession(
 		return err
 	}
 
-	tempDir, err := os.MkdirTemp("", "exec-*")
-	if err != nil {
-		return err
+	var tempDir string
+	var mountConfig mount.Mount
+
+	if os.Getenv("USE_DOCKER_VOLUME") == "true" {
+		// --- Running inside Docker (Docker-in-Docker sibling) ---
+		baseDir := os.Getenv("EXECUTION_BASE_DIR")
+		volName := os.Getenv("DOCKER_VOLUME_NAME")
+
+		if baseDir == "" || volName == "" {
+			return fmt.Errorf("missing env vars for docker volume mode")
+		}
+
+		// Create temp dir inside the shared volume mount (e.g., /app/workspace/exec-123)
+		tempDir, err = os.MkdirTemp(baseDir, "exec-*")
+		if err != nil {
+			return err
+		}
+
+		// Extract the relative directory name (e.g., exec-123)
+		dirName := filepath.Base(tempDir)
+
+		mountConfig = mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: volName,
+			Target: workspaceDir,
+			VolumeOptions: &mount.VolumeOptions{
+				Subpath: dirName,
+			},
+			ReadOnly: false,
+		}
+
+	} else {
+		// --- Running Locally (Host) ---
+		tempDir, err = os.MkdirTemp("", "exec-*")
+		if err != nil {
+			return err
+		}
+
+		// Bind mount the temp dir directly to /workspace
+		mountConfig = mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   tempDir,
+			Target:   workspaceDir,
+			ReadOnly: false,
+		}
 	}
 
 	codePath := filepath.Join(tempDir, spec.FileName)
@@ -78,12 +120,7 @@ func (d *DockerExecutor) StartSession(
 				"/tmp": "rw,size=32m,noexec,nosuid",
 			},
 			Mounts: []mount.Mount{
-				{
-					Type:     mount.TypeBind,
-					Source:   tempDir,
-					Target:   workspaceDir,
-					ReadOnly: false,
-				},
+				mountConfig, // 🔥 Dynamic mount config
 			},
 		},
 		nil, nil, "",
