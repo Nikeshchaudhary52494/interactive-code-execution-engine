@@ -15,6 +15,7 @@ func (d *DockerExecutor) watchSession(
 	tempDir string,
 ) {
 	defer os.RemoveAll(tempDir)
+	defer s.SignalCleanup() // 🔥 Signal cleanup when done
 
 	// ---------------- stream stdout ----------------
 	go func() {

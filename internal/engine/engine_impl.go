@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"execution-engine/internal/executor"
@@ -14,13 +15,14 @@ type engineImpl struct {
 	executor *executor.DockerExecutor
 	sessions *session.Manager
 	sem      chan struct{} // concurrency limiter
+	wg       sync.WaitGroup
 }
 
 func New(exec *executor.DockerExecutor) Engine {
 	return &engineImpl{
 		executor: exec,
 		sessions: session.NewManager(),
-		sem:      make(chan struct{}, 1), // 🔥 MAX 10 containers
+		sem:      make(chan struct{}, 10), // 🔥 MAX 10 containers
 	}
 }
 
@@ -40,8 +42,10 @@ func (e *engineImpl) StartSession(
 
 	log.Printf("Engine: session %s created (WAITING)", sess.ID)
 
+	e.wg.Add(1)
 	// 2️⃣ Background goroutine tries to run it
 	go func() {
+		defer e.wg.Done()
 		select {
 		case e.sem <- struct{}{}:
 			// slot acquired
@@ -62,8 +66,8 @@ func (e *engineImpl) StartSession(
 
 			sess.MarkRunning()
 
-			// wait until execution finishes
-			<-sess.Done()
+			// wait until execution finishes AND resources are cleaned up
+			<-sess.CleanupDone()
 
 			log.Printf(
 				"Engine: session %s finished (state=%s)",
@@ -87,4 +91,22 @@ func (e *engineImpl) StartSession(
 
 func (e *engineImpl) GetSession(id string) (*session.Session, bool) {
 	return e.sessions.Get(id)
+}
+
+func (e *engineImpl) Shutdown(ctx context.Context) error {
+	log.Println("Engine: shutting down, waiting for active sessions...")
+	
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("Engine: all sessions finished.")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

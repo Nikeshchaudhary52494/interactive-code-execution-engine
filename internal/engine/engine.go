@@ -10,4 +10,5 @@ import (
 type Engine interface {
 	StartSession(ctx context.Context, req modules.ExecuteRequest) (*session.Session, error)
 	GetSession(id string) (*session.Session, bool)
+	Shutdown(ctx context.Context) error
 }

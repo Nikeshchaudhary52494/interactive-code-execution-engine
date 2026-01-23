@@ -42,6 +42,9 @@ type Session struct {
 	lastActivity time.Time
 	idleTimeout  time.Duration
 	idleTimer    *time.Timer
+
+	cleanup     chan struct{}
+	cleanupOnce sync.Once
 }
 
 func New(
@@ -64,6 +67,7 @@ func New(
 		done:         make(chan struct{}),
 		idleTimeout:  30 * time.Second,
 		lastActivity: time.Now(),
+		cleanup:      make(chan struct{}),
 	}
 	s.startIdleWatcher()
 	return s
@@ -299,6 +303,16 @@ func (s *Session) Done() <-chan struct{} {
 	return s.done
 }
 
+func (s *Session) SignalCleanup() {
+	s.cleanupOnce.Do(func() {
+		close(s.cleanup)
+	})
+}
+
+func (s *Session) CleanupDone() <-chan struct{} {
+	return s.cleanup
+}
+
 func NewPending(id, lang, code string) *Session {
 	s := &Session{
 		ID:           id,
@@ -309,6 +323,7 @@ func NewPending(id, lang, code string) *Session {
 		done:      make(chan struct{}),
 		idleTimeout: 30 * time.Second,
 		lastActivity: time.Now(),
+		cleanup:      make(chan struct{}),
 	}
 	s.startIdleWatcher()
 	return s
